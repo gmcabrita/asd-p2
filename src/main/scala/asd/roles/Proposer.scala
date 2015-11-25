@@ -1,97 +1,119 @@
 package asd.roles
 
-import akka.actor.{Actor, ActorRef, Props}
+import asd.messages._
 
-class Proposer(acceptors: List[ActorRef], quorum: Int) extends Actor {
+import akka.actor.{Actor, ActorRef, ReceiveTimeout}
+import akka.event.{Logging, LoggingAdapter}
+import akka.util.Timeout
+
+import scala.concurrent.duration._
+import scala.collection.parallel.mutable.ParHashMap
+
+class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas: Int, quorum: Int, index: Int) extends Actor {
+
+  val timeout = Timeout(15 milliseconds)
+  val log = Logging.getLogger(context.system, this)
+
   // store for the highest n of each key
   var n_store = new ParHashMap[String, Int]
 
-  class waiting_for_accept_ok(respond_to: ActorRef, received: Int, va: Pair) extends Actor {
-    def receive = {
-      case AcceptOk(n) => {
-        // TODO:
-        // if (na_ok > na) {
-        //   context.become(waiting_for_propose_ok(respond_to, received + 1, v, na_ok, va_ok))
-        // } else {
-        //   context.become(waiting_for_propose_ok(respond_to, received + 1, v, na, va))
-        // }
+  def pick_replicas(key: String, servers: List[ActorRef]): List[ActorRef] = {
+    val start = Math.abs(key.hashCode() % num_replicas)
 
-        // if (received + 1 == quorum) {
-        //   if (na > 0) highest_n = na
-
-        //   val children = acceptors.map(s => context.actorOf(Props(new AcceptSender(s, self, va))))
-        //   children.foreach(_ ! Start)
-        //   context.setReceiveTimeout(timeout.duration)
-        //   context.become(waiting_for_accept_ok(respond_to, 0, va))
-        // }
-      }
-      case ReceiveTimeout => {
-        // log.warning("Timeout on replication. Was: {}, Received: {}, Result: {}", self, received, result)
-        // respond_to ! Timedout
-        // context.become(receive)
-        // TODO:
-      }
+    val picked = servers.slice(start, start + num_replicas)
+    if (picked.size < num_replicas) {
+      picked ++ servers.slice(0, num_replicas - picked.size)
+    } else {
+      picked
     }
   }
 
-  class waiting_for_propose_ok(respond_to: ActorRef, received: Int, v: Pair, na: Int, va: Pair) extends Actor {
-    def receive = {
-      case PrepareOk(na_ok, va_ok) => {
-        if (na_ok > na) {
-          context.become(waiting_for_propose_ok(respond_to, received + 1, v, na_ok, va_ok))
+  def waiting_for_learner_result(respond_to: ActorRef, key: String): Receive = {
+    case Result(`key`, v) => {
+      respond_to ! v
+      context.become(receive)
+    }
+    case ReceiveTimeout => {
+      log.warning("Timeout on Get({}) | Was: {}", key, self)
+      context.become(receive)
+    }
+  }
+
+  def waiting_for_accept_ok(respond_to: ActorRef, received: Int, highest_n: Int, key: String, final_va: String, replicated_acceptors: List[ActorRef]): Receive = {
+    case AcceptOk(`key`, `highest_n`) => {
+      if (received + 1 == quorum) {
+        // send decided(key, final_va) to replicated acceptors and reply to respond_to
+        replicated_acceptors.par.foreach(_ ! Decided(key, final_va))
+        respond_to ! Ack()
+        context.become(receive)
+      }
+
+      context.become(waiting_for_accept_ok(respond_to, received + 1, highest_n, key, final_va, replicated_acceptors))
+    }
+    case ReceiveTimeout => {
+      // TODO: maybe
+      // log.warning("Timeout on replication. Was: {}, Received: {}, Result: {}", self, received, result)
+      // respond_to ! Timedout
+      context.become(receive)
+    }
+  }
+
+  def waiting_for_prepare_ok(respond_to: ActorRef, received: Int, highest_n: Int, key: String, v: String, na: Int, va: String, replicated_acceptors: List[ActorRef]): Receive = {
+    case PrepareOk(`key`, na_ok, va_ok) => {
+      if (received + 1 == quorum) {
+        // TODO: make this less weird
+        val step_nva = if (na_ok > na) {
+          (na_ok, va_ok)
         } else {
-          context.become(waiting_for_propose_ok(respond_to, received + 1, v, na, va))
+          (na, va)
         }
 
-        if (received + 1 == quorum) {
-          if (na > 0) highest_n = na
-
-          val children = acceptors.par.each(s => s ! Accept(highest_n, va))
-          children.foreach(_ ! Start)
-          context.setReceiveTimeout(timeout.duration)
-          context.become(waiting_for_accept_ok(respond_to, 0, va))
+        val final_va = if (step_nva._1 > -1) {
+          step_nva._2
+        } else {
+          v
         }
+
+        replicated_acceptors.par.foreach(_ ! Accept(key, highest_n, final_va))
+        context.setReceiveTimeout(timeout.duration)
+        context.become(waiting_for_accept_ok(respond_to, 0, highest_n, key, final_va, replicated_acceptors))
       }
-      case ReceiveTimeout => {
-        // log.warning("Timeout on replication. Was: {}, Received: {}, Result: {}", self, received, result)
-        // respond_to ! Timedout
-        // context.become(receive)
-        // TODO:
+
+      if (na_ok > na) {
+        context.become(waiting_for_prepare_ok(respond_to, received + 1, highest_n, key, v, na_ok, va_ok, replicated_acceptors))
+      } else {
+        context.become(waiting_for_prepare_ok(respond_to, received + 1, highest_n, key, v, na, va, replicated_acceptors))
       }
+    }
+    case PrepareTooLow(`key`, n) => {
+      n_store.put(key, n)
+    }
+    case ReceiveTimeout => {
+      // TODO: maybe
+      // log.warning("Timeout on replication. Was: {}, Received: {}, Result: {}", self, received, result)
+      // respond_to ! Timedout
+      context.become(receive)
     }
   }
 
   def receive = {
     case Put(key, value) => {
-      // TODO:
-      // are we the leader?
-      // no -> send operation to leader (leader needs the client ActorRef!)
-      // yes -> keep going
-      //   retrieve the servers that should be replicated with this key
-      //   retrieve the highest_n belonging to this key and increase it by 1
-      //   send message to all the relevant acceptors and change context
+      val highest_n = n_store.get(key) match {
+        case Some(v) => v + 1
+        case None  => 0 + 1
+      }
+      n_store.put(key, highest_n)
+      val replicated_acceptors = pick_replicas(key, acceptors)
 
-      // val children = acceptors.par.each(s => s ! Prepare(key, highest_n))
-      // children.foreach(_ ! Start)
-      // context.setReceiveTimeout(timeout.duration)
-      // context.become(waiting_for_propose_ok(sender, 0, Pair(key, value), 0, null))
+      replicated_acceptors.par.foreach(_ ! Prepare(key, highest_n))
+      context.setReceiveTimeout(timeout.duration)
+      context.become(waiting_for_prepare_ok(sender, 0, highest_n, key, value, -1, null, replicated_acceptors))
     }
     case Get(key) => {
-      // are we the leader?
-      // no -> send operation to leader (leader needs the client ActorRef!)
-      // yes -> keep going
-      //   retrieve the servers that should be replicated with this key
-      //   retrieve the highest_n belonging to this key and increase it by 1
-      //   send message to all the relevant acceptors and change context
-
-      // TODO: can we make this operation faster?
-      // maybe we don't need to run paxos for this one since we're just reading.
-    }
-    case PrepareOk => {
-      // enviar Accept para Acceptor
-    }
-    case AcceptOk => {
-      // enviar Decided para todos os Acceptors
+      // ask our related learner, this should never time out because our learner should always be up if we (this proposer) are up
+      learners(index) ! Get(key)
+      context.setReceiveTimeout(timeout.duration)
+      context.become(waiting_for_learner_result(sender, key))
     }
   }
 }
