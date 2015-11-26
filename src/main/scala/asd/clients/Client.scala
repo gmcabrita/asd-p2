@@ -12,7 +12,7 @@ import scala.collection.parallel.mutable.ParHashMap
 
 class Client(proposers: List[ActorRef], num_replicas: Int, quorum: Int) extends Actor {
 
-  val timeout = Timeout(15 milliseconds)
+  val timeout = Timeout(10000 milliseconds)
   val log = Logging.getLogger(context.system, this)
 
   var operations: Long = 0
@@ -35,6 +35,9 @@ class Client(proposers: List[ActorRef], num_replicas: Int, quorum: Int) extends 
       operations += 1
       latency += (end_time - start_time)
 
+      // TODO: remove
+      log.info("Finished Put({}, {})", key, value)
+
       respond_to ! Ack
       context.become(receive)
     }
@@ -54,6 +57,9 @@ class Client(proposers: List[ActorRef], num_replicas: Int, quorum: Int) extends 
       operations += 1
       latency += (end_time - start_time)
 
+      // TODO: remove
+      log.info("Finished Get({}), result={}", key, result)
+
       respond_to ! result
       context.become(receive)
     }
@@ -69,7 +75,9 @@ class Client(proposers: List[ActorRef], num_replicas: Int, quorum: Int) extends 
 
   def receive = {
     case Put(key, value) => {
+      log.info("Begin Put({}, {})", key, value)
       val start_time = System.nanoTime
+      log.info("{}", pick_replicas(key, proposers))
       pick_replicas(key, proposers).par.foreach(_ ! Put(key, value))
       context.setReceiveTimeout(timeout.duration)
       context.become(waiting_for_ack(sender, key, value, start_time))

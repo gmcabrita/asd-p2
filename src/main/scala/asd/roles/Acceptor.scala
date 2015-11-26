@@ -7,22 +7,11 @@ import akka.event.{Logging, LoggingAdapter}
 
 import scala.collection.parallel.mutable.ParHashMap
 
-class Acceptor(learners: List[ActorRef], num_replicas: Int) extends Actor {
+class Acceptor(learners: List[ActorRef], index: Int) extends Actor {
 
   // np, na, va
   var state_store = new ParHashMap[String, (Int, Int, String)]
   val log = Logging.getLogger(context.system, this)
-
-  def pick_replicas(key: String, servers: List[ActorRef]): List[ActorRef] = {
-    val start = Math.abs(key.hashCode() % num_replicas)
-
-    val picked = servers.slice(start, start + num_replicas)
-    if (picked.size < num_replicas) {
-      picked ++ servers.slice(0, num_replicas - picked.size)
-    } else {
-      picked
-    }
-  }
 
   def receive = {
     case Prepare(key, n) => {
@@ -56,7 +45,7 @@ class Acceptor(learners: List[ActorRef], num_replicas: Int) extends Actor {
     }
     case Decided(key, value) => {
       state_store.remove(key)
-      pick_replicas(key, learners).par.foreach(_ ! Decided(key, value))
+      learners(index) ! Decided(key, value)
     }
   }
 }

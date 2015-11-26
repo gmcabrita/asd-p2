@@ -11,7 +11,7 @@ import scala.collection.parallel.mutable.ParHashMap
 
 class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas: Int, quorum: Int, index: Int) extends Actor {
 
-  val timeout = Timeout(15 milliseconds)
+  val timeout = Timeout(2000 milliseconds)
   val log = Logging.getLogger(context.system, this)
 
   // store for the highest n of each key
@@ -29,12 +29,12 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
   }
 
   def waiting_for_learner_result(respond_to: ActorRef, key: String): Receive = {
-    case Result(`key`, v) => {
-      respond_to ! v
+    case result @ Result(`key`, v) => {
+      respond_to ! result
       context.become(receive)
     }
     case ReceiveTimeout => {
-      log.warning("Timeout on Get({}) | Was: {}", key, self)
+      log.warning("Proposer: Timeout on Get({}) | Was: {}", key, self)
       context.become(receive)
     }
   }
@@ -44,15 +44,16 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
       if (received + 1 == quorum) {
         // send decided(key, final_va) to replicated acceptors and reply to respond_to
         replicated_acceptors.par.foreach(_ ! Decided(key, final_va))
-        respond_to ! Ack()
+        respond_to ! Ack
+        log.info("Key: {}, Value: {}", key, final_va)
         context.become(receive)
+      } else {
+        context.become(waiting_for_accept_ok(respond_to, received + 1, highest_n, key, final_va, replicated_acceptors))
       }
-
-      context.become(waiting_for_accept_ok(respond_to, received + 1, highest_n, key, final_va, replicated_acceptors))
     }
     case ReceiveTimeout => {
       // TODO: maybe
-      // log.warning("Timeout on replication. Was: {}, Received: {}, Result: {}", self, received, result)
+      log.warning("Timeout on AcceptOk. Was: {}, Received: {}", self, received)
       // respond_to ! Timedout
       context.become(receive)
     }
@@ -77,12 +78,12 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
         replicated_acceptors.par.foreach(_ ! Accept(key, highest_n, final_va))
         context.setReceiveTimeout(timeout.duration)
         context.become(waiting_for_accept_ok(respond_to, 0, highest_n, key, final_va, replicated_acceptors))
-      }
-
-      if (na_ok > na) {
-        context.become(waiting_for_prepare_ok(respond_to, received + 1, highest_n, key, v, na_ok, va_ok, replicated_acceptors))
       } else {
-        context.become(waiting_for_prepare_ok(respond_to, received + 1, highest_n, key, v, na, va, replicated_acceptors))
+        if (na_ok > na) {
+          context.become(waiting_for_prepare_ok(respond_to, received + 1, highest_n, key, v, na_ok, va_ok, replicated_acceptors))
+        } else {
+          context.become(waiting_for_prepare_ok(respond_to, received + 1, highest_n, key, v, na, va, replicated_acceptors))
+        }
       }
     }
     case PrepareTooLow(`key`, n) => {
@@ -98,6 +99,7 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
 
   def receive = {
     case Put(key, value) => {
+      log.info("{} {}", key, value)
       val highest_n = n_store.get(key) match {
         case Some(v) => v + 1
         case None  => 0 + 1
