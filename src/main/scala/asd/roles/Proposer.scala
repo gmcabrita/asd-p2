@@ -107,12 +107,14 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
       n_store.put(key, highest_n)
       val replicated_acceptors = pick_replicas(key, acceptors)
 
+      // TODO: spawn instead of changing context
       replicated_acceptors.par.foreach(_ ! Prepare(key, highest_n))
       context.setReceiveTimeout(timeout.duration)
       context.become(waiting_for_prepare_ok(sender, 0, highest_n, key, value, -1, null, replicated_acceptors))
     }
     case Get(key) => {
       // ask our related learner, this should never time out because our learner should always be up if we (this proposer) are up
+      // TODO: spawn instead of changing context
       learners(index) ! Get(key)
       context.setReceiveTimeout(timeout.duration)
       context.become(waiting_for_learner_result(sender, key))

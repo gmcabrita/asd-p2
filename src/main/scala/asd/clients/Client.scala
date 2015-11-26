@@ -77,13 +77,14 @@ class Client(proposers: List[ActorRef], num_replicas: Int, quorum: Int) extends 
     case Put(key, value) => {
       log.info("Begin Put({}, {})", key, value)
       val start_time = System.nanoTime
-      log.info("{}", pick_replicas(key, proposers))
+      // TODO: spawn instead of changing context
       pick_replicas(key, proposers).par.foreach(_ ! Put(key, value))
       context.setReceiveTimeout(timeout.duration)
       context.become(waiting_for_ack(sender, key, value, start_time))
     }
     case Get(key) => {
       val start_time = System.nanoTime
+      // TODO: spawn instead of changing context
       pick_replicas(key, proposers).par.foreach(_ ! Get(key))
       context.setReceiveTimeout(timeout.duration)
       context.become(waiting_for_result(sender, key, start_time))
