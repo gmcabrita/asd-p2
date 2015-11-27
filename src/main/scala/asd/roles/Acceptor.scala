@@ -44,7 +44,7 @@ class Acceptor(learners: List[ActorRef], index: Int) extends Actor {
       }
     }
     case Decided(key, value) => {
-      state_store.remove(key)
+      //state_store.remove(key)
       learners(index) ! Decided(key, value)
     }
   }

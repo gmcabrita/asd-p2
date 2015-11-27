@@ -3,29 +3,45 @@ package asd
 import asd.clients.Client
 import asd.roles.{Proposer, Acceptor, Learner}
 import asd.evaluation._
-import asd.messages.{Put, Get}
+import asd.messages.{Start, Put, Get}
 
-import akka.actor.{ActorRef, Props, ActorSystem}
+import akka.actor.{Actor, ActorRef, Props, ActorSystem}
 
 object SmallTest extends App {
+  class Foo(operations: List[Any]) extends Actor {
+    val num_servers = 12
+    val num_clients = 3
+
+    val num_replicas = 3
+    val quorum = 2
+
+    var op = 0
+
+    val learners: Vector[ActorRef] = (1 to num_servers).toVector.map(_ => system.actorOf(Props[Learner]))
+    val acceptors: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Acceptor(learners.toList, i - 1))))
+    val proposers: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Proposer(acceptors.toList, learners.toList, num_replicas, quorum, i - 1))))
+    val clients: Vector[ActorRef] = (1 to num_clients).toVector.map(_ => system.actorOf(Props(new Client(proposers.toList, num_replicas, quorum))))
+
+    def receive = {
+      case Start => {
+        clients(0) ! operations(op)
+        op += 1
+      }
+      case _ => {
+        clients(1) ! operations(op)
+        op += 1
+      }
+    }
+  }
   implicit val system = ActorSystem("MAIN")
 
-  val num_servers = 12
-  val num_clients = 3
+  // TODO:
+  // fix messages not reaching the client(????)
+  // test concurrent read + write
+  // test concurrent writes
 
-  val num_replicas = 3
-  val quorum = 2
+  val ops = List(Put("x", "test"), Get("x"))
+  val foo = system.actorOf(Props(new Foo(ops)))
 
-  val learners: Vector[ActorRef] = (1 to num_servers).toVector.map(_ => system.actorOf(Props[Learner]))
-  val acceptors: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Acceptor(learners.toList, i - 1))))
-  val proposers: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Proposer(acceptors.toList, learners.toList, num_replicas, quorum, i - 1))))
-  val clients: Vector[ActorRef] = (1 to num_clients).toVector.map(_ => system.actorOf(Props(new Client(proposers.toList, num_replicas, quorum))))
-
-  clients(0) ! Put("x", "test")
-  clients(1) ! Put("x", "hello")
-  // clients(2) ! Get("x")
-  // Thread.sleep(250)
-  // clients(2) ! Get("x")
-  // Thread.sleep(250)
-  // clients(2) ! Get("x")
+  foo ! Start
 }
