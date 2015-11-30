@@ -68,7 +68,7 @@ class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_rep
 
       Thread.sleep(2000)
 
-      val results: Vector[Future[Any]] = clients.map(c => ask(c, Stop)) //.mapTo(AvgLatency)
+      val results: Vector[Future[Any]] = clients.map(c => ask(c, Stop))
       val final_results = Future.fold[Any, (Double, Double, Double)](results)((0, Double.MinValue, Double.MaxValue))((acc, r) => {
         (acc, r) match {
           case ((avg, high, low), AvgLatency(v)) => {
