@@ -78,17 +78,6 @@ class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_rep
           }
         }
       })
-      // val final_results: Double = results.par.map(f => f onComplete {
-      //   case Success(v) => {
-      //     v match {
-      //       case AvgLatency(l) => l
-      //     }
-      //   }
-      //   case _ => 0
-      // }).reduce((a, b) => a + b)
-      // final_results onComplete {
-      //   case Success(v) => println("Average client latency: " + v / results.length)
-      // }
 
       Await.result(final_results, 1 second).asInstanceOf[(Double, Double, Double)] match {
         case (avg, high, low) => {
