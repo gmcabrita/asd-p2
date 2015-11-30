@@ -1,23 +1,23 @@
 package asd
 
+import asd.messages.WarmUp
 import asd.evaluation._
-import akka.actor.ActorSystem
+import akka.actor.{ActorSystem, Props}
 
 object KVStore extends App {
   implicit val system = ActorSystem("MAIN")
 
-  // val eval = system.actorOf(Props(new LocalEvaluation(
-  //   1000, // num keys
-  //   12, // num clients
-  //   12, // num servers
-  //   7, // quorum
-  //   12, // degree of replication
-  //   192371441, // seed
-  //   true, // linearizable?
-  //   10000, // number of operations
-  //   5, // number of injected faults
-  //   1 // runs per case
-  // )))
+  val eval = system.actorOf(Props(new LocalEvaluation(
+    1000, // num keys
+    12, // num servers
+    60000, // num clients
+    3, // num replicas
+    2, // quorum
+    10000, // run time in milliseconds
+    (50, 50), // rw ratio
+    192371441, // seed
+    false // logging
+  )))
 
-  // eval ! Start
+  eval ! WarmUp
 }

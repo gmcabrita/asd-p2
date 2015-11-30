@@ -10,42 +10,38 @@ import scala.collection.parallel.mutable.ParHashMap
 class Acceptor(learners: List[ActorRef], index: Int) extends Actor {
 
   // np, na, va
-  var state_store = new ParHashMap[String, (Int, Int, String)]
+  var state_store = new ParHashMap[Int, (Int, Int, ActorRef)]
   val log = Logging.getLogger(context.system, this)
 
   def receive = {
-    case Prepare(key, n) => {
-      state_store.get(key) match {
+    case PrepareLeader(idx, n) => {
+      state_store.get(idx) match {
         case Some((np, na, va)) => {
           if (n > np) {
-            state_store.put(key, (n, na, va))
-            sender ! PrepareOk(key, na, va)
+            state_store.put(idx, (n, na, va))
+            sender ! PrepareLeaderOk(idx, na, va)
           } else {
-            sender ! PrepareTooLow(key, np)
+            sender ! PrepareLeaderTooLow(idx, np)
           }
         }
         case None => {
-          state_store.put(key, (n, -1, null))
-          sender ! PrepareOk(key, -1, null)
+          state_store.put(idx, (n, -1, null))
+          sender ! PrepareLeaderOk(idx, -1, null)
         }
       }
     }
-    case Accept(key, n, value) => {
-      state_store.get(key) match {
+    case AcceptLeader(idx, n, value) => {
+      state_store.get(idx) match {
         case Some((np, _, _)) => {
           if (n >= np) {
-            state_store.put(key, (np, n, value))
-            sender ! AcceptOk(key, n)
+            state_store.put(idx, (np, n, value))
+            sender ! AcceptLeaderOk(idx, n)
           }
         }
         case _ => {
-          log.warning("Accept({}, {}, {}) did not find the key in the state_store.", key, n, value)
+          log.warning("Accept({}, {}, {}) did not find the key in the state_store.", idx, n, value)
         }
       }
-    }
-    case Decided(key, value) => {
-      //state_store.remove(key)
-      learners(index) ! Decided(key, value)
     }
   }
 }

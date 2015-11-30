@@ -9,66 +9,64 @@ import akka.util.Timeout
 
 import scala.concurrent.duration._
 import scala.collection.parallel.mutable.ParHashMap
+import scala.collection.mutable.HashSet
 
-class Client(proposers: List[ActorRef], num_replicas: Int, quorum: Int) extends Actor {
+class Client(replicas: Vector[Vector[ActorRef]], num_replicas: Int, quorum: Int) extends Actor {
 
-  val timeout = Timeout(1000 milliseconds)
+  val timeout = Timeout(2000 milliseconds)
   val log = Logging.getLogger(context.system, this)
 
-  var operations: Long = 0
-  var latency: Long = 0
+  var operations: Double = 0
+  var latency: Double = 0
 
-  def pick_replicas(key: String, servers: List[ActorRef]): List[ActorRef] = {
-    val start = Math.abs(key.hashCode() % num_replicas)
+  var stopped_responding = new HashSet[ActorRef]
 
-    val picked = servers.slice(start, start + num_replicas)
-    if (picked.size < num_replicas) {
-      picked ++ servers.slice(0, num_replicas - picked.size)
-    } else {
-      picked
-    }
+  def pick_replicas(key: String): List[ActorRef] = {
+    val idx = Math.abs(key.hashCode() % num_replicas)
+
+    replicas(idx).toList
   }
 
-  def waiting_for_ack(respond_to: ActorRef, key: String, value: String, start_time: Long): Receive = {
+  def waiting_for_ack(respond_to: ActorRef, key: String, value: String, start_time: Double, replica: ActorRef): Receive = {
     case Ack => {
-      val end_time = System.nanoTime
+      val end_time = System.nanoTime.toDouble
       operations += 1
       latency += (end_time - start_time)
 
-      // TODO: remove
       log.info("Finished Put({}, {})", key, value)
 
       respond_to ! Ack
       context.become(receive)
     }
     case ReceiveTimeout => {
-      val end_time = System.nanoTime
+      val end_time = System.nanoTime.toDouble
       operations += 1
       latency += (end_time - start_time)
+      stopped_responding.add(replica)
 
-      log.warning("Timeout on Put({}, {}) | Was: {}", key, value, self)
+      log.warning("Timeout on Put({}, {})", key, value)
       context.become(receive)
     }
   }
 
-  def waiting_for_result(respond_to: ActorRef, key: String, start_time: Long): Receive = {
+  def waiting_for_result(respond_to: ActorRef, key: String, start_time: Double, replica: ActorRef): Receive = {
     case result @ Result(_, _) => {
-      val end_time = System.nanoTime
+      val end_time = System.nanoTime.toDouble
       operations += 1
       latency += (end_time - start_time)
 
-      // TODO: remove
       log.info("Finished Get({}), result={}", key, result)
 
       respond_to ! result
       context.become(receive)
     }
     case ReceiveTimeout => {
-      val end_time = System.nanoTime
+      val end_time = System.nanoTime.toDouble
       operations += 1
       latency += (end_time - start_time)
+      stopped_responding.add(replica)
 
-      log.warning("Timeout on Get({}) | Was: {}", key, self)
+      log.warning("Timeout on Get({})", key)
       context.become(receive)
     }
   }
@@ -76,19 +74,31 @@ class Client(proposers: List[ActorRef], num_replicas: Int, quorum: Int) extends 
   def receive = {
     case Put(key, value) => {
       log.info("Begin Put({}, {})", key, value)
-      val start_time = System.nanoTime
-      pick_replicas(key, proposers).par.foreach(_ ! Put(key, value))
-      context.setReceiveTimeout(timeout.duration)
-      context.become(waiting_for_ack(sender, key, value, start_time))
+      val start_time = System.nanoTime.toDouble
+      pick_replicas(key).find(!stopped_responding.contains(_)) match {
+        case Some(r) => {
+          r ! CPut(self, key, value)
+          context.setReceiveTimeout(timeout.duration)
+          context.become(waiting_for_ack(sender, key, value, start_time, r))
+        }
+        case None => log.warning("No replicas for key {} are responding.", key)
+      }
     }
     case Get(key) => {
-      val start_time = System.nanoTime
-      pick_replicas(key, proposers).par.foreach(_ ! Get(key))
-      context.setReceiveTimeout(timeout.duration)
-      context.become(waiting_for_result(sender, key, start_time))
+      log.info("Begin Get({})", key)
+      val start_time = System.nanoTime.toDouble
+      pick_replicas(key).find(!stopped_responding.contains(_)) match {
+        case Some(r) => {
+          r ! CGet(self, key)
+          context.setReceiveTimeout(timeout.duration)
+          context.become(waiting_for_result(sender, key, start_time, r))
+        }
+        case None => log.warning("No replicas for key {} are responding.", key)
+      }
     }
     case Stop => {
-      log.info("Client {}, average latency: {}", self, latency.toDouble / operations.toDouble)
+      // convert from nanoseconds to milliseconds
+      sender ! AvgLatency(latency / 1000000 / operations)
     }
   }
 }

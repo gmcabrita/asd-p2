@@ -14,20 +14,21 @@ class Learner extends Actor {
 
   def receive = {
     case Decided(key, value) => {
-      log.info("stored: {}, {}", key, value)
+      log.info("Stored: {}, {}", key, value)
       store.put(key, value)
+
+      sender ! Stored
     }
     case Get(key) => {
       val value = store.get(key) match {
         case v @ Some(va) => {
-          //log.info("k: {}, v: {}", key, va)
           Result(key, v)
         }
         case None => {
-          //log.info("k: {}, v: None", key)
           Result(key, None)
         }
       }
+      log.info("Read: {}, {}", key, value)
       sender ! value
     }
   }

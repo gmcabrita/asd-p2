@@ -5,54 +5,53 @@ import asd.messages._
 import akka.actor.{Actor, ActorRef, Props, ReceiveTimeout}
 import akka.event.{Logging, LoggingAdapter}
 import akka.util.Timeout
+import akka.pattern.{ask, pipe}
 
 import scala.concurrent.duration._
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent._
 import scala.collection.parallel.mutable.ParHashMap
+import scala.collection.mutable.HashSet
+import scala.util.{Success, Failure}
 
-class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas: Int, quorum: Int, index: Int) extends Actor {
+class Proposer(learns: Vector[ActorRef], num_replicas: Int, quorum: Int, index: Int) extends Actor {
 
-  val timeout = Timeout(1000 milliseconds)
+  implicit val timeout = Timeout(2000 milliseconds)
+
   val log = Logging.getLogger(context.system, this)
 
-  // store for the highest n of each key
-  var n_store = new ParHashMap[String, Int]
+  var n_store = new ParHashMap[Int, Int]
 
-  def pick_replicas(key: String, servers: List[ActorRef]): List[ActorRef] = {
-    val start = Math.abs(key.hashCode() % num_replicas)
+  var leaders = new ParHashMap[Int, ActorRef]
 
-    val picked = servers.slice(start, start + num_replicas)
-    if (picked.size < num_replicas) {
-      picked ++ servers.slice(0, num_replicas - picked.size)
-    } else {
-      picked
-    }
-  }
+  var acceptors: Vector[Vector[ActorRef]] = Vector()
+  var proposers: Vector[Vector[ActorRef]] = Vector()
+  var learners: Vector[Vector[ActorRef]] = Vector()
 
-  class PutRunner(key: String, value: String) extends Actor {
+  def pick_replicas(key: String, servers: Vector[Vector[ActorRef]]): Vector[ActorRef] = servers(get_idx(key))
+  def get_idx(key: String): Int = Math.abs(key.hashCode() % num_replicas)
 
-    var client: ActorRef = null
+  class ElectionRunner(idx: Int) extends Actor {
 
-    def waiting_for_accept_ok(received: Int, highest_n: Int, final_va: String, replicated_acceptors: List[ActorRef]): Receive = {
-      case AcceptOk(`key`, `highest_n`) => {
+    var working_proposers = new HashSet[ActorRef]
+
+    def waiting_for_accept_leader_ok(reply_to: ActorRef, received: Int, highest_n: Int, final_va: ActorRef, replicated_acceptors: List[ActorRef]): Receive = {
+      case AcceptLeaderOk(`idx`, `highest_n`) => {
         if (received + 1 == quorum) {
-          replicated_acceptors.par.foreach(_ ! Decided(key, final_va))
-          client ! Ack
-          log.info("Key: {}, Value: {}", key, final_va)
+          proposers.par.foreach(l => l.par.foreach(p => p ! DecidedLeader(idx, final_va)))
+          reply_to ! Ack
         }
 
-        context.become(waiting_for_accept_ok(received + 1, highest_n, final_va, replicated_acceptors))
+        context.become(waiting_for_accept_leader_ok(reply_to, received + 1, highest_n, final_va, replicated_acceptors))
       }
       case ReceiveTimeout => {
-        // TODO: maybe
-        if (received < quorum) log.warning("Timeout on AcceptOk. Was: {}, Received: {}", self, received)
-        // respond_to ! Timedout
         context.stop(self)
       }
-      case Stop => context.stop(self)
     }
 
-    def waiting_for_prepare_ok(received: Int, highest_n: Int, v: String, na: Int, va: String, replicated_acceptors: List[ActorRef]): Receive = {
-      case PrepareOk(`key`, na_ok, va_ok) => {
+    def waiting_for_prepare_leader_ok(reply_to: ActorRef, received: Int, highest_n: Int, v: ActorRef, na: Int, va: ActorRef, replicated_acceptors: List[ActorRef]): Receive = {
+      case PrepareLeaderOk(`idx`, na_ok, va_ok) => {
         if (received + 1 == quorum) {
           // TODO: make this less weird
           val step_nva = if (na_ok > na) {
@@ -67,84 +66,114 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
             v
           }
 
-          replicated_acceptors.par.foreach(_ ! Accept(key, highest_n, final_va))
+          replicated_acceptors.par.foreach(_ ! AcceptLeader(idx, highest_n, final_va))
           context.setReceiveTimeout(timeout.duration)
-          context.become(waiting_for_accept_ok(0, highest_n, final_va, replicated_acceptors))
+          context.become(waiting_for_accept_leader_ok(reply_to, 0, highest_n, final_va, replicated_acceptors))
         } else {
           if (na_ok > na) {
-            context.become(waiting_for_prepare_ok(received + 1, highest_n, v, na_ok, va_ok, replicated_acceptors))
+            context.become(waiting_for_prepare_leader_ok(reply_to, received + 1, highest_n, v, na_ok, va_ok, replicated_acceptors))
           } else {
-            context.become(waiting_for_prepare_ok(received + 1, highest_n, v, na, va, replicated_acceptors))
+            context.become(waiting_for_prepare_leader_ok(reply_to, received + 1, highest_n, v, na, va, replicated_acceptors))
           }
         }
       }
-      case PrepareTooLow(`key`, n) => {
-        n_store.put(key, n)
-        log.info("Prepare too low. Key: {}, Value: {}", key, value)
-        //context.stop(self)
-        //self ! Stop
+      case PrepareLeaderTooLow(`idx`, n) => {
+        n_store.put(idx, n)
       }
       case ReceiveTimeout => {
-        // TODO: maybe
-        // log.warning("Timeout on replication. Was: {}, Received: {}, Result: {}", self, received, result)
-        // respond_to ! Timedout
         context.stop(self)
       }
-      case Stop => context.stop(self)
     }
 
-    def receive = {
-      case StartRun(c) => {
-        client = c
-        val highest_n = n_store.get(key) match {
+    def waiting_for_pong(reply_to: ActorRef): Receive = {
+      case Pong => {
+        working_proposers.add(sender)
+        if (working_proposers.size >= num_replicas) self ! Continue
+      }
+      case Continue => {
+        val highest_n = n_store.get(idx) match {
           case Some(v) => v + index + 1
           case None  => 0 + index + 1
         }
-        n_store.put(key, highest_n)
-        val replicated_acceptors = pick_replicas(key, acceptors)
+        n_store.put(idx, highest_n)
+        val replicated_acceptors = acceptors(idx).toList
 
-        replicated_acceptors.par.foreach(_ ! Prepare(key, highest_n))
-        context.setReceiveTimeout(timeout.duration)
-        context.become(waiting_for_prepare_ok(0, highest_n, value, -1, null, replicated_acceptors))
+        replicated_acceptors.par.foreach(_ ! PrepareLeader(idx, highest_n))
+
+        proposers(idx).find(working_proposers.contains(_)) match {
+          case Some(value) => {
+            context.setReceiveTimeout(timeout.duration)
+            context.become(waiting_for_prepare_leader_ok(reply_to, 0, highest_n, value, -1, null, replicated_acceptors))
+          }
+          case None => log.warning("No working proposers.")
+        }
+
       }
-    }
-  }
-
-  class GetRunner(key: String) extends Actor {
-
-    var client: ActorRef = null
-
-    def waiting_for_learner_result(): Receive = {
-      case result @ Result(`key`, v) => {
-        client ! result
-        self ! Stop
-      }
-      case ReceiveTimeout => {
-        log.warning("Proposer: Timeout on Get({}) | Was: {}", key, self)
-        context.stop(self)
-      }
-      case Stop => context.stop(self)
+      case ReceiveTimeout => self ! Continue
     }
 
     def receive = {
-      case StartRun(c) => {
-        client = c
-        learners(index) ! Get(key)
+      case StartElection(reply_to) => {
+        proposers(idx).par.foreach(_ ! Ping)
         context.setReceiveTimeout(timeout.duration)
-        context.become(waiting_for_learner_result())
+        context.become(waiting_for_pong(reply_to))
       }
     }
   }
 
   def receive = {
-    case Put(key, value) => {
-      log.info("{} {}", key, value)
-      val runner = context.actorOf(Props(new PutRunner(key, value)))
-      runner ! StartRun(sender)
+    case CPut(client, key, value) => {
+      val idx = get_idx(key)
+      leaders.get(idx) match {
+        case Some(l) => {
+          if (l == self) {
+            val results: Vector[Future[Any]] = pick_replicas(key, learners).map(c => ask(c, Decided(key, value)))
+            results.par.foreach(f => f onComplete {
+              case Success(_) => log.info("Received reply on Put({}, {})", key, value)
+              case Failure(v) => {
+                log.warning("Lost reply on Put({}, {} with Future error: {})", key, value, v)
+                Thread.sleep(1000)
+                sys.exit(0)
+              }
+            })
+
+            client ! Ack
+          } else {
+            l ! CPut(client, key, value)
+          }
+        }
+        case None => log.warning("No leader exists for replica set starting on index {}", idx)
+      }
     }
-    case Get(key) => {
-      val runner = context.actorOf(Props(new GetRunner(key)))
-      runner ! StartRun(sender)
+    case CGet(client, key) => {
+      val idx = get_idx(key)
+      leaders.get(idx) match {
+        case Some(l) => {
+          if (l == self) {
+            val result: Future[Result] = ask(learns(index), Get(key)).mapTo[Result]
+            result pipeTo client
+          } else {
+            l ! CGet(client, key)
+          }
+        }
+        case None => log.warning("No leader exists for replica set starting on index {}", idx)
+      }
+    }
+    case Replicas(prop, accep, learn) => {
+      proposers = prop
+      acceptors = accep
+      learners = learn
+    }
+    case Election(idx) => {
+      val runner = context.actorOf(Props(new ElectionRunner(idx)))
+      runner ! StartElection(sender)
+    }
+    case DecidedLeader(idx, leader) => leaders.put(idx, leader)
+    case Ping => sender ! Pong
+
+    // used to verify leaders before the evaluation starts
+    case VerifyLeaders => {
+      sender ! Leaders(leaders)
     }
   }
 }
