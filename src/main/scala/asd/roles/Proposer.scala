@@ -11,7 +11,7 @@ import scala.collection.parallel.mutable.ParHashMap
 
 class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas: Int, quorum: Int, index: Int) extends Actor {
 
-  val timeout = Timeout(2000 milliseconds)
+  val timeout = Timeout(1000 milliseconds)
   val log = Logging.getLogger(context.system, this)
 
   // store for the highest n of each key
@@ -28,7 +28,10 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
     }
   }
 
-  class PutRunner(client: ActorRef, key: String, value: String) extends Actor {
+  class PutRunner(key: String, value: String) extends Actor {
+
+    var client: ActorRef = null
+
     def waiting_for_accept_ok(received: Int, highest_n: Int, final_va: String, replicated_acceptors: List[ActorRef]): Receive = {
       case AcceptOk(`key`, `highest_n`) => {
         if (received + 1 == quorum) {
@@ -91,7 +94,8 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
     }
 
     def receive = {
-      case Start => {
+      case StartRun(c) => {
+        client = c
         val highest_n = n_store.get(key) match {
           case Some(v) => v + index + 1
           case None  => 0 + index + 1
@@ -106,7 +110,10 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
     }
   }
 
-  class GetRunner(client: ActorRef, key: String) extends Actor {
+  class GetRunner(key: String) extends Actor {
+
+    var client: ActorRef = null
+
     def waiting_for_learner_result(): Receive = {
       case result @ Result(`key`, v) => {
         client ! result
@@ -120,7 +127,8 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
     }
 
     def receive = {
-      case Start => {
+      case StartRun(c) => {
+        client = c
         learners(index) ! Get(key)
         context.setReceiveTimeout(timeout.duration)
         context.become(waiting_for_learner_result())
@@ -131,12 +139,12 @@ class Proposer(acceptors: List[ActorRef], learners: List[ActorRef], num_replicas
   def receive = {
     case Put(key, value) => {
       log.info("{} {}", key, value)
-      val runner = context.actorOf(Props(new PutRunner(sender, key, value)))
-      runner ! Start
+      val runner = context.actorOf(Props(new PutRunner(key, value)))
+      runner ! StartRun(sender)
     }
     case Get(key) => {
-      val runner = context.actorOf(Props(new GetRunner(sender, key)))
-      runner ! Start
+      val runner = context.actorOf(Props(new GetRunner(key)))
+      runner ! StartRun(sender)
     }
   }
 }

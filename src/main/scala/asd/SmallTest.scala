@@ -3,7 +3,7 @@ package asd
 import asd.clients.Client
 import asd.roles.{Proposer, Acceptor, Learner}
 import asd.evaluation._
-import asd.messages.{Start, Put, Get}
+import asd.messages.{Start, Put, Get, Stop}
 
 import akka.actor.{Actor, ActorRef, Props, ActorSystem}
 
@@ -24,23 +24,28 @@ object SmallTest extends App {
 
     def receive = {
       case Start => {
-        clients(0) ! operations(op)
-        op += 1
+        clients(0) ! operations(0)
+        clients(1) ! operations(1)
+        op += 2
+      }
+      case Stop => {
+        sys.exit(0)
       }
       case _ => {
-        clients(1) ! operations(op)
-        op += 1
+        if (op < operations.length) {
+          sender ! operations(op)
+          op += 1
+        } else {
+          self ! Stop
+          clients(0) ! Stop
+          clients(1) ! Stop
+        }
       }
     }
   }
   implicit val system = ActorSystem("MAIN")
 
-  // TODO:
-  // fix messages not reaching the client(????)
-  // test concurrent read + write
-  // test concurrent writes
-
-  val ops = List(Put("x", "test"), Get("x"))
+  val ops = List(Put("x", "goodbye"), Put("x", "hello"), Get("x"))
   val foo = system.actorOf(Props(new Foo(ops)))
 
   foo ! Start

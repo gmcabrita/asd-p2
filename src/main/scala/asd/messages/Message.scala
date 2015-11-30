@@ -1,6 +1,9 @@
 package asd.messages
 
+import akka.actor.ActorRef
+
 case class Start()
+case class StartRun(sender: ActorRef)
 case class Stop()
 
 case class Prepare(key: String, n: Int)
