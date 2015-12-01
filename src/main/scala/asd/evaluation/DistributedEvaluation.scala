@@ -71,9 +71,9 @@ class DistributedEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, n
 
   val clients: Vector[ActorRef] = (1 to num_clients).toVector.map(i => {
     if (i <= num_servers/2) {
-      system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s1))), "p1"+i)
+      system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s1))), "c1"+i)
     } else {
-      system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s2))), "p2"+i)
+      system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s2))), "c2"+i)
     }
   })
 
