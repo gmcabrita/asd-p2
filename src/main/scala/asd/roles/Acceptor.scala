@@ -43,5 +43,6 @@ class Acceptor(learners: List[ActorRef], index: Int) extends Actor {
         }
       }
     }
+    case Stop => context.stop(self)
   }
 }

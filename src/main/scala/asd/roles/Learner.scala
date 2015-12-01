@@ -31,5 +31,6 @@ class Learner extends Actor {
       log.info("Read: {}, {}", key, value)
       sender ! value
     }
+    case Stop => context.stop(self)
   }
 }

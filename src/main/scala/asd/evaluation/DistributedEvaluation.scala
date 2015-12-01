@@ -6,7 +6,8 @@ import asd.rand.Zipf
 import asd.roles.{Acceptor, Learner, Proposer}
 import asd.clients.Client
 
-import akka.actor.{Actor, ActorRef, Props, ActorSystem, ReceiveTimeout}
+import akka.actor.{Actor, ActorRef, Props, ActorSystem, ReceiveTimeout, Deploy, AddressFromURIString}
+import akka.remote.RemoteScope
 import akka.event.{Logging, LoggingAdapter}
 import akka.event.Logging.LogLevel._
 import akka.pattern.ask
@@ -21,25 +22,46 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.parallel.mutable.ParHashMap
 import scala.util.{Success, Failure, Random}
 
-class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int) extends Actor {
+import java.io.File
+
+class DistributedEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int) extends Actor {
   implicit val timeout = Timeout(3000 milliseconds)
 
   val zipf = new Zipf(num_keys, seed)
   val r = new Random(seed)
 
   val log = Logging.getLogger(context.system, this)
-  implicit val system = ActorSystem("EVAL",
-    ConfigFactory.parseString("""
-      akka.stdout-loglevel = "WARNING"
-      akka.loglevel = "WARNING"
-    """))
+  val config = ConfigFactory.parseFile(new File("src/main/resources/deploy.conf")).resolve()
+  implicit val system = ActorSystem("DeployerSystem", config)
+
+  val d = AddressFromURIString(config.getString("deployer.path"))
+  val s1 = AddressFromURIString(config.getString("remote1.path"))
+  val s2 = AddressFromURIString(config.getString("remote2.path"))
 
   val faults = List() //List(0, 3, 6, 9)
   val num_faults = faults.length
 
-  val learners: Vector[ActorRef] = (1 to num_servers).toVector.map(_ => system.actorOf(Props[Learner]))
-  val acceptors: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Acceptor(learners.toList, i - 1))))
-  val proposers: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Proposer(learners, num_replicas, num_faults, quorum, i - 1))))
+  val learners: Vector[ActorRef] = (1 to num_servers).toVector.map(i => {
+    if (i <= num_servers/2) {
+      system.actorOf(Props(classOf[Learner]).withDeploy(Deploy(scope = RemoteScope(s1))), "l1"+i)
+    } else {
+      system.actorOf(Props(classOf[Learner]).withDeploy(Deploy(scope = RemoteScope(s2))), "l2"+i)
+    }
+  })
+  val acceptors: Vector[ActorRef] = (1 to num_servers).toVector.map(i => {
+    if (i <= num_servers/2) {
+      system.actorOf(Props(classOf[Acceptor], learners.toList, i - 1).withDeploy(Deploy(scope = RemoteScope(s1))), "a1"+i)
+    } else {
+      system.actorOf(Props(classOf[Acceptor], learners.toList, i - 1).withDeploy(Deploy(scope = RemoteScope(s2))), "a2"+i)
+    }
+  })
+  val proposers: Vector[ActorRef] = (1 to num_servers).toVector.map(i => {
+    if (i <= num_servers/2) {
+      system.actorOf(Props(classOf[Proposer], learners, num_replicas, num_faults, quorum, i - 1).withDeploy(Deploy(scope = RemoteScope(s1))), "p1"+i)
+    } else {
+      system.actorOf(Props(classOf[Proposer], learners, num_replicas, num_faults, quorum, i - 1).withDeploy(Deploy(scope = RemoteScope(s2))), "p2"+i)
+    }
+  })
 
   val proposer_replicas: Vector[Vector[ActorRef]] = proposers.sliding(num_replicas).toVector ++ (proposers.takeRight(num_replicas - 1) ++ proposers.take(num_replicas - 1)).sliding(num_replicas).toVector
 
@@ -47,7 +69,13 @@ class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_rep
 
   val learners_replicas: Vector[Vector[ActorRef]] = learners.sliding(num_replicas).toVector ++ (learners.takeRight(num_replicas - 1) ++ learners.take(num_replicas - 1)).sliding(num_replicas).toVector
 
-  val clients: Vector[ActorRef] = (1 to num_clients).toVector.map(_ => system.actorOf(Props(new Client(proposer_replicas, num_replicas, quorum))))
+  val clients: Vector[ActorRef] = (1 to num_clients).toVector.map(i => {
+    if (i <= num_servers/2) {
+      system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s1))), "p1"+i)
+    } else {
+      system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s2))), "p2"+i)
+    }
+  })
 
   var leaders = new ParHashMap[Int, ActorRef]
 

@@ -188,6 +188,7 @@ class Proposer(learns: Vector[ActorRef], num_replicas: Int, num_faults: Int, quo
     }
     case DecidedLeader(idx, leader) => leaders.put(idx, leader)
     case Ping => sender ! Pong
+    case Stop => context.stop(self)
 
     // used to verify leaders before the evaluation starts
     case VerifyLeaders => {

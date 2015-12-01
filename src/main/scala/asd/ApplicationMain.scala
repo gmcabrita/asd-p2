@@ -10,13 +10,12 @@ object KVStore extends App {
   val eval = system.actorOf(Props(new LocalEvaluation(
     1000, // num keys
     12, // num servers
-    256, // num clients
+    12, // num clients
     3, // num replicas
     2, // quorum
     10000, // run time in milliseconds
     (50, 50), // rw ratio
-    192371441, // seed
-    0 // num faults
+    192371441 // seed
   )))
 
   eval ! WarmUp
