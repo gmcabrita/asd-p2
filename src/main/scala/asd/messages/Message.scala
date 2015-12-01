@@ -5,14 +5,8 @@ import scala.collection.parallel.mutable.ParHashMap
 
 case class Start()
 case class WarmUp()
-case class StartRun(sender: ActorRef)
 case class Stop()
 
-case class Prepare(key: String, n: Int)
-case class PrepareOk(key: String, na: Int, va: String)
-case class PrepareTooLow(key: String, n: Int)
-case class Accept(key: String, n: Int, va: String)
-case class AcceptOk(key: String, n: Int)
 case class Decided(key: String, value: String)
 
 case class Replicas(proposers: Vector[Vector[ActorRef]], acceptors: Vector[Vector[ActorRef]], learners: Vector[Vector[ActorRef]])

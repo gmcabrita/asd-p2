@@ -13,7 +13,7 @@ import scala.collection.mutable.HashSet
 
 class Client(replicas: Vector[Vector[ActorRef]], num_replicas: Int, quorum: Int) extends Actor {
 
-  val timeout = Timeout(2000 milliseconds)
+  val timeout = Timeout(3000 milliseconds)
   val log = Logging.getLogger(context.system, this)
 
   var operations: Double = 0
@@ -98,7 +98,7 @@ class Client(replicas: Vector[Vector[ActorRef]], num_replicas: Int, quorum: Int)
     }
     case Stop => {
       // convert from nanoseconds to milliseconds
-      sender ! AvgLatency(latency / 1000000 / operations)
+      sender ! AvgLatency(latency / 1e6 / operations)
     }
   }
 }

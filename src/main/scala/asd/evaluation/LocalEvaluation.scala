@@ -21,21 +21,18 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.parallel.mutable.ParHashMap
 import scala.util.{Success, Failure, Random}
 
-class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int, logging: Boolean) extends Actor {
+class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int) extends Actor {
   implicit val timeout = Timeout(3000 milliseconds)
 
   val zipf = new Zipf(num_keys, seed)
   val r = new Random(seed)
 
   val log = Logging.getLogger(context.system, this)
-  implicit val system = if (!logging) {
-    ActorSystem("EVAL", ConfigFactory.parseString("""
+  implicit val system = ActorSystem("EVAL",
+    ConfigFactory.parseString("""
       akka.stdout-loglevel = "WARNING"
       akka.loglevel = "WARNING"
     """))
-  } else {
-    ActorSystem("EVAL")
-  }
 
   val learners: Vector[ActorRef] = (1 to num_servers).toVector.map(_ => system.actorOf(Props[Learner]))
   val acceptors: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Acceptor(learners.toList, i - 1))))
@@ -58,8 +55,8 @@ class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_rep
   var end: Long = 0
 
   def continue(client: ActorRef) = {
-
     val time = System.nanoTime
+
     if (time - begin >= run_time * 1e6) {
       end = time
       println("reads: " + reads)

@@ -17,7 +17,7 @@ import scala.util.{Success, Failure}
 
 class Proposer(learns: Vector[ActorRef], num_replicas: Int, quorum: Int, index: Int) extends Actor {
 
-  implicit val timeout = Timeout(2000 milliseconds)
+  implicit val timeout = Timeout(3000 milliseconds)
 
   val log = Logging.getLogger(context.system, this)
 
