@@ -21,7 +21,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.parallel.mutable.ParHashMap
 import scala.util.{Success, Failure, Random}
 
-class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int) extends Actor {
+class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int, num_faults: Int) extends Actor {
   implicit val timeout = Timeout(3000 milliseconds)
 
   val zipf = new Zipf(num_keys, seed)
@@ -36,7 +36,7 @@ class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_rep
 
   val learners: Vector[ActorRef] = (1 to num_servers).toVector.map(_ => system.actorOf(Props[Learner]))
   val acceptors: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Acceptor(learners.toList, i - 1))))
-  val proposers: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Proposer(learners, num_replicas, quorum, i - 1))))
+  val proposers: Vector[ActorRef] = (1 to num_servers).toVector.map(i => system.actorOf(Props(new Proposer(learners, num_replicas, num_faults, quorum, i - 1))))
 
   val proposer_replicas: Vector[Vector[ActorRef]] = proposers.sliding(num_replicas).toVector ++ (proposers.takeRight(num_replicas - 1) ++ proposers.take(num_replicas - 1)).sliding(num_replicas).toVector
 

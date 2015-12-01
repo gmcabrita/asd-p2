@@ -15,7 +15,7 @@ import scala.collection.parallel.mutable.ParHashMap
 import scala.collection.mutable.HashSet
 import scala.util.{Success, Failure}
 
-class Proposer(learns: Vector[ActorRef], num_replicas: Int, quorum: Int, index: Int) extends Actor {
+class Proposer(learns: Vector[ActorRef], num_replicas: Int, num_faults: Int, quorum: Int, index: Int) extends Actor {
 
   implicit val timeout = Timeout(3000 milliseconds)
 
@@ -128,14 +128,32 @@ class Proposer(learns: Vector[ActorRef], num_replicas: Int, quorum: Int, index: 
         case Some(l) => {
           if (l == self) {
             val results: Vector[Future[Any]] = pick_replicas(key, learners).map(c => ask(c, Decided(key, value)))
-            results.par.foreach(f => f onComplete {
-              case Success(_) => log.info("Received reply on Put({}, {})", key, value)
-              case Failure(v) => {
-                log.warning("Lost reply on Put({}, {} with Future error: {})", key, value, v)
-                Thread.sleep(1000)
-                sys.exit(0)
+
+            // results.foreach(f => f onComplete {
+            //   case Success(_) => {
+            //     log.info("Received reply on Put({}, {})", key, value)
+            //   }
+            //   case Failure(v) => {
+            //     if (num_faults == 0) {
+            //       log.warning("Lost reply on Put({}, {} with Future error: {})", key, value, v)
+            //       Thread.sleep(1000)
+            //       sys.exit(0)
+            //     }
+            //   }
+            // })
+
+            val receives: Int = results.par.map(f => {
+              Await.ready(f, 1 second).value.get match {
+                case Success(_) => 1
+                case Failure(_) => 0
               }
-            })
+            }).reduce(_ + _)
+
+            if (receives < quorum) {
+              log.warning("Not enough replicas are available on Put({}, {}).", key, value)
+              Thread.sleep(1000)
+              sys.exit(0)
+            }
 
             client ! Ack
           } else {
