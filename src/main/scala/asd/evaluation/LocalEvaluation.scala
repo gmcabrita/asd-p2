@@ -76,7 +76,8 @@ class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_rep
       val final_results = Future.fold[Any, (Double, Double, Double)](results)((0, Double.MinValue, Double.MaxValue))((acc, r) => {
         (acc, r) match {
           case ((avg, high, low), AvgLatency(v)) => {
-            if (v > high) (avg + v, v, low)
+            if (v > high && v < low) (avg + v, v, v)
+            else if (v > high) (avg + v, v, low)
             else if (v < low) (avg + v, high, v)
             else (avg + v, high, low)
           }
