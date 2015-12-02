@@ -24,7 +24,7 @@ import scala.util.{Success, Failure, Random}
 
 import java.io.File
 
-class DistributedEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int) extends Actor {
+class DistributedEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_replicas: Int, quorum: Int, run_time: Long, rw_ratio: (Int, Int), seed: Int, system: ActorSystem) extends Actor {
   implicit val timeout = Timeout(3000 milliseconds)
 
   val zipf = new Zipf(num_keys, seed)
@@ -32,9 +32,7 @@ class DistributedEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, n
 
   val log = Logging.getLogger(context.system, this)
   val config = ConfigFactory.parseFile(new File("src/main/resources/deploy.conf")).resolve()
-  implicit val system = ActorSystem("DeployerSystem", config)
 
-  val d = AddressFromURIString(config.getString("deployer.path"))
   val s1 = AddressFromURIString(config.getString("remote1.path"))
   val s2 = AddressFromURIString(config.getString("remote2.path"))
 
@@ -70,7 +68,7 @@ class DistributedEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, n
   val learners_replicas: Vector[Vector[ActorRef]] = learners.sliding(num_replicas).toVector ++ (learners.takeRight(num_replicas - 1) ++ learners.take(num_replicas - 1)).sliding(num_replicas).toVector
 
   val clients: Vector[ActorRef] = (1 to num_clients).toVector.map(i => {
-    if (i <= num_servers/2) {
+    if (i <= num_clients/2 || num_clients == 1) {
       system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s1))), "c1"+i)
     } else {
       system.actorOf(Props(classOf[Client], proposer_replicas, num_replicas, quorum).withDeploy(Deploy(scope = RemoteScope(s2))), "c2"+i)
