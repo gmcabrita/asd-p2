@@ -84,9 +84,13 @@ class LocalEvaluation(num_keys: Int, num_servers: Int, num_clients: Int, num_rep
         }
       })
 
+      val operations = reads + writes
+      val t = (end - begin)/1e6
       println("reads: " + reads)
       println("writes: " + writes)
-      println("elapsed time: " + (end - begin)/1e6+"ms")
+      println("operations: " + operations)
+      println("elapsed time: " + t + "ms")
+      println("throughput: " + ((operations*10000) / t))
 
       Await.result(final_results, 1 second).asInstanceOf[(Double, Double, Double)] match {
         case (avg, high, low) => {
